@@ -1,0 +1,10 @@
+build/
+dist/
+*.exe
+*.log
+*.pyc
+*.pyo
+*.spec
+*.egg-info/
+build.bat
+dependencies/
