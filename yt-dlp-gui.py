@@ -34,7 +34,8 @@ class YtDlpGUI:
         self.icon = tk.PhotoImage(file=resource_path("assets/logo.png"))
         self.root.iconphoto(False, self.icon)
         self.root.title("L's YouTube Downloader")
-        self.root.geometry("700x650")
+        self.root.geometry("1280x720")
+        self.root.minsize(1280, 720)  # Set minimum size to prevent cutting off content
         self.root.configure(bg="#f0f0f0")
         
         # Configuration
@@ -149,6 +150,101 @@ class YtDlpGUI:
         # Initialize the state of the format options based on initial selection
         self.update_format_selection()
         
+        # Compression Options
+        compression_frame = ttk.LabelFrame(main_frame, text="Compression (Optional)")
+        compression_frame.pack(fill=tk.X, pady=(0, 20))
+        
+        # Enable compression checkbox
+        self.compression_enabled = tk.BooleanVar(value=False)
+        compression_check = ttk.Checkbutton(compression_frame, text="Enable Compression", 
+                                           variable=self.compression_enabled, 
+                                           command=self.update_compression_state)
+        compression_check.pack(anchor=tk.W, padx=10, pady=(5, 10))
+        
+        # Compression mode selection
+        self.compression_mode_var = tk.StringVar(value="simple")
+        
+        mode_frame = ttk.Frame(compression_frame)
+        mode_frame.pack(fill=tk.X, padx=20, pady=(0, 10))
+        
+        simple_radio = ttk.Radiobutton(mode_frame, text="Simple Mode (Presets)", 
+                                      variable=self.compression_mode_var, 
+                                      value="simple", 
+                                      command=self.update_compression_mode)
+        simple_radio.pack(anchor=tk.W)
+        
+        advanced_radio = ttk.Radiobutton(mode_frame, text="Advanced Mode (Custom Settings)", 
+                                        variable=self.compression_mode_var, 
+                                        value="advanced", 
+                                        command=self.update_compression_mode)
+        advanced_radio.pack(anchor=tk.W)
+        
+        # Simple Mode - Presets
+        self.simple_frame = ttk.Frame(compression_frame)
+        self.simple_frame.pack(fill=tk.X, padx=30, pady=(5, 10))
+        
+        preset_label = ttk.Label(self.simple_frame, text="Preset:")
+        preset_label.pack(anchor=tk.W)
+        
+        self.preset_var = tk.StringVar(value="discord_8mb")
+        preset_combo = ttk.Combobox(self.simple_frame, textvariable=self.preset_var, state="readonly", width=40)
+        preset_combo['values'] = (
+            'Discord 8MB (Video)',
+            'Discord 25MB (Nitro Classic)',
+            'Discord 50MB (Nitro)',
+            'Discord 100MB (Nitro Boost)',
+            'Twitter/X 512MB',
+            'Instagram 100MB',
+            'WhatsApp 16MB',
+            'Telegram 2GB'
+        )
+        preset_combo.current(0)
+        preset_combo.pack(fill=tk.X, pady=(5, 0))
+        
+        # Advanced Mode - Custom Settings
+        self.advanced_frame = ttk.Frame(compression_frame)
+        self.advanced_frame.pack(fill=tk.X, padx=30, pady=(5, 10))
+        
+        # Target file size
+        target_size_frame = ttk.Frame(self.advanced_frame)
+        target_size_frame.pack(fill=tk.X, pady=(0, 8))
+        
+        target_size_label = ttk.Label(target_size_frame, text="Target File Size (MB):")
+        target_size_label.pack(side=tk.LEFT)
+        
+        self.target_size_entry = ttk.Entry(target_size_frame, width=15)
+        self.target_size_entry.pack(side=tk.LEFT, padx=(10, 0))
+        self.target_size_entry.insert(0, "8")
+        
+        # Video bitrate
+        video_bitrate_frame = ttk.Frame(self.advanced_frame)
+        video_bitrate_frame.pack(fill=tk.X, pady=(0, 8))
+        
+        video_bitrate_label = ttk.Label(video_bitrate_frame, text="Video Bitrate (kbps):")
+        video_bitrate_label.pack(side=tk.LEFT)
+        
+        self.video_bitrate_entry = ttk.Entry(video_bitrate_frame, width=15)
+        self.video_bitrate_entry.pack(side=tk.LEFT, padx=(10, 0))
+        self.video_bitrate_entry.insert(0, "500")
+        
+        bitrate_help = ttk.Label(video_bitrate_frame, text="(Leave empty to auto-calculate from file size)", 
+                                font=("Arial", 8), foreground="gray")
+        bitrate_help.pack(side=tk.LEFT, padx=(10, 0))
+        
+        # Audio bitrate
+        audio_bitrate_frame = ttk.Frame(self.advanced_frame)
+        audio_bitrate_frame.pack(fill=tk.X, pady=(0, 8))
+        
+        audio_bitrate_label = ttk.Label(audio_bitrate_frame, text="Audio Bitrate (kbps):")
+        audio_bitrate_label.pack(side=tk.LEFT)
+        
+        self.audio_bitrate_entry = ttk.Entry(audio_bitrate_frame, width=15)
+        self.audio_bitrate_entry.pack(side=tk.LEFT, padx=(10, 0))
+        self.audio_bitrate_entry.insert(0, "128")
+        
+        # Initialize compression state
+        self.update_compression_state()
+        
         # Format Help Button
         help_button = ttk.Button(main_frame, text="Format Guide", command=self.show_format_guide)
         help_button.pack(pady=(10, 0))
@@ -159,9 +255,9 @@ class YtDlpGUI:
         
         # Console Output
         console_frame = ttk.LabelFrame(main_frame, text="Console Output")
-        console_frame.pack(fill=tk.BOTH, expand=True)
+        console_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
         
-        self.console = tk.Text(console_frame, wrap=tk.WORD, bg="#000000", fg="#00FF00", height=10)
+        self.console = tk.Text(console_frame, wrap=tk.WORD, bg="#000000", fg="#00FF00", height=12)
         self.console.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
         # Scrollbar for console
@@ -190,6 +286,42 @@ class YtDlpGUI:
             # Enable audio format options when audio is selected
             for child in self.audio_formats_frame.winfo_children():
                 child.configure(state="normal")
+    
+    def update_compression_state(self):
+        """Enable/disable compression options based on checkbox"""
+        state = "normal" if self.compression_enabled.get() else "disabled"
+        
+        # Update all compression controls
+        for child in self.simple_frame.winfo_children():
+            if isinstance(child, (ttk.Combobox, ttk.Entry, ttk.Radiobutton)):
+                child.configure(state=state)
+            elif isinstance(child, ttk.Frame):
+                for subchild in child.winfo_children():
+                    if isinstance(subchild, (ttk.Combobox, ttk.Entry, ttk.Radiobutton)):
+                        subchild.configure(state=state)
+        
+        for child in self.advanced_frame.winfo_children():
+            if isinstance(child, (ttk.Combobox, ttk.Entry, ttk.Radiobutton)):
+                child.configure(state=state)
+            elif isinstance(child, ttk.Frame):
+                for subchild in child.winfo_children():
+                    if isinstance(subchild, (ttk.Combobox, ttk.Entry, ttk.Radiobutton)):
+                        subchild.configure(state=state)
+        
+        # Update mode-specific frames
+        self.update_compression_mode()
+    
+    def update_compression_mode(self):
+        """Show/hide compression mode frames based on selection"""
+        if not self.compression_enabled.get():
+            self.simple_frame.pack_forget()
+            self.advanced_frame.pack_forget()
+        elif self.compression_mode_var.get() == "simple":
+            self.advanced_frame.pack_forget()
+            self.simple_frame.pack(fill=tk.X, padx=30, pady=(5, 10))
+        else:
+            self.simple_frame.pack_forget()
+            self.advanced_frame.pack(fill=tk.X, padx=30, pady=(5, 10))
 
     def show_format_guide(self):
         """Display format guide in a popup window"""
@@ -341,10 +473,8 @@ AUDIO FORMATS:
             return
         
         if not self.validate_url(url):
-            messagebox.showwarning("Warning", "URL does not appear to be a valid YouTube URL")
-            response = messagebox.askyesno("Continue?", "Do you want to continue anyway?")
-            if not response:
-                return
+            messagebox.showwarning("Warning", "URL does not appear to be a valid YouTube URL")    
+            return
         
         # Clear console
         self.console.delete(1.0, tk.END)
@@ -382,11 +512,33 @@ AUDIO FORMATS:
             )
             
             # Stream the output
+            merge_notified = False
+            compress_notified = False
             while True:
                 output = process.stdout.readline()
                 if output == '' and process.poll() is not None:
                     break
                 if output:
+                    output_lower = output.lower()
+                    
+                    # Notify user about merging/processing stages
+                    if not merge_notified and ('merging' in output_lower or 'muxing' in output_lower):
+                        self.update_console("\n" + "=" * 60)
+                        self.update_console("MERGING VIDEO AND AUDIO STREAMS...")
+                        if self.compression_enabled.get():
+                            self.update_console("This may take several minutes due to compression.")
+                        self.update_console("=" * 60 + "\n")
+                        merge_notified = True
+                    
+                    if not compress_notified and self.compression_enabled.get() and \
+                       ('destination' in output_lower or 'post-process' in output_lower):
+                        self.update_console("\n" + "=" * 60)
+                        self.update_console("COMPRESSING VIDEO TO TARGET SIZE...")
+                        self.update_console("Please wait - this process cannot be rushed.")
+                        self.update_console("FFmpeg is re-encoding the video.")
+                        self.update_console("=" * 60 + "\n")
+                        compress_notified = True
+                    
                     self.update_console(output.strip())
             
             return_code = process.poll()
@@ -406,6 +558,143 @@ AUDIO FORMATS:
             # Re-enable download button
             self.download_button.config(state=tk.NORMAL)
     
+    def map_audio_format(self, format_name):
+        """Map UI audio format names to yt-dlp format strings"""
+        format_map = {
+            'ogg': 'vorbis',  # OGG container uses Vorbis codec
+            'alac': 'alac',
+            'mp3': 'mp3',
+            'aac': 'aac',
+            'm4a': 'm4a',
+            'opus': 'opus',
+            'flac': 'flac',
+            'wav': 'wav'
+        }
+        return format_map.get(format_name, format_name)
+    
+    def get_video_duration(self, url):
+        """Fetch video duration in seconds"""
+        try:
+            # Check for local yt-dlp.exe first
+            local_ytdlp = os.path.join(self.deps_path, "yt-dlp.exe")
+            if os.path.exists(local_ytdlp):
+                ytdlp_cmd = local_ytdlp
+            else:
+                ytdlp_cmd = "yt-dlp"
+            
+            self.update_console("Fetching video information to calculate compression...")
+            
+            # Get video duration
+            result = subprocess.run(
+                [ytdlp_cmd, "--print", "duration", url],
+                capture_output=True,
+                text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW
+            )
+            
+            if result.returncode == 0 and result.stdout.strip():
+                duration = float(result.stdout.strip())
+                self.update_console(f"Video duration: {int(duration // 60)}m {int(duration % 60)}s")
+                return duration
+            else:
+                self.update_console("Warning: Could not fetch duration, using 3 minute estimate")
+                return 180  # Default to 3 minutes
+        except Exception as e:
+            self.update_console(f"Warning: Error fetching duration ({str(e)}), using 3 minute estimate")
+            return 180
+    
+    def calculate_bitrates_for_target_size(self, target_size_mb, duration_seconds, audio_bitrate_kbps):
+        """Calculate video bitrate needed to achieve target file size"""
+        # Convert target size to kilobits
+        target_size_kbits = target_size_mb * 8192  # 1 MB = 8192 kilobits
+        
+        # Calculate total bitrate needed
+        total_bitrate_kbps = target_size_kbits / duration_seconds
+        
+        # Subtract audio bitrate to get video bitrate
+        # Add small overhead for container (about 2%)
+        overhead_factor = 0.98
+        video_bitrate_kbps = (total_bitrate_kbps - audio_bitrate_kbps) * overhead_factor
+        
+        # Ensure minimum viable bitrate
+        video_bitrate_kbps = max(100, int(video_bitrate_kbps))
+        
+        return video_bitrate_kbps
+    
+    def get_compression_settings(self, url=None, duration=None):
+        """Calculate compression settings based on user selection"""
+        if not self.compression_enabled.get():
+            return None
+        
+        if self.compression_mode_var.get() == "simple":
+            # Simple mode - use presets with calculated bitrates
+            preset = self.preset_var.get()
+            
+            # Map presets to target sizes and audio bitrates
+            preset_map = {
+                'Discord 8MB (Video)': (8, 96),
+                'Discord 25MB (Nitro Classic)': (25, 128),
+                'Discord 50MB (Nitro)': (50, 128),
+                'Discord 100MB (Nitro Boost)': (100, 192),
+                'Twitter/X 512MB': (512, 192),
+                'Instagram 100MB': (100, 192),
+                'WhatsApp 16MB': (16, 96),
+                'Telegram 2GB': (2048, 256)
+            }
+            
+            target_size_mb, audio_bitrate = preset_map.get(preset, (8, 96))
+            
+            # If we have duration, calculate proper video bitrate
+            if duration:
+                video_bitrate = self.calculate_bitrates_for_target_size(
+                    target_size_mb, duration, audio_bitrate
+                )
+            else:
+                # Fallback to estimation for 3-minute video
+                video_bitrate = self.calculate_bitrates_for_target_size(
+                    target_size_mb, 180, audio_bitrate
+                )
+            
+            return {
+                'target_size': target_size_mb,
+                'video_bitrate': video_bitrate,
+                'audio_bitrate': audio_bitrate
+            }
+        else:
+            # Advanced mode - use user input
+            try:
+                target_size = float(self.target_size_entry.get() or "8")
+                video_bitrate_str = self.video_bitrate_entry.get().strip()
+                audio_bitrate = int(self.audio_bitrate_entry.get() or "128")
+                
+                if video_bitrate_str:
+                    # User specified video bitrate
+                    video_bitrate = int(video_bitrate_str)
+                else:
+                    # Auto-calculate video bitrate from target size and duration
+                    if duration:
+                        video_bitrate = self.calculate_bitrates_for_target_size(
+                            target_size, duration, audio_bitrate
+                        )
+                    else:
+                        # Fallback to estimation for 3-minute video
+                        video_bitrate = self.calculate_bitrates_for_target_size(
+                            target_size, 180, audio_bitrate
+                        )
+                
+                return {
+                    'target_size': target_size,
+                    'video_bitrate': video_bitrate,
+                    'audio_bitrate': audio_bitrate
+                }
+            except ValueError:
+                self.update_console("Warning: Invalid compression settings, using defaults")
+                return {
+                    'target_size': 8,
+                    'video_bitrate': 500,
+                    'audio_bitrate': 96
+                }
+    
     def build_command(self, url):
         """Build the yt-dlp command based on selected options"""
         # Check for local yt-dlp.exe first
@@ -417,23 +706,60 @@ AUDIO FORMATS:
         
         cmd = [ytdlp_cmd, "--js-runtimes", "node"]
         
+        # Get video duration if compression is enabled
+        duration = None
+        if self.compression_enabled.get() and self.format_var.get() == "video":
+            duration = self.get_video_duration(url)
+        
+        # Get compression settings if enabled (now with duration)
+        compression = self.get_compression_settings(url, duration)
+        
         if self.format_var.get() == "video":
             # Video command - prioritize best quality
             video_format = self.video_format_var.get()
             
-            # Build format-specific FFmpeg arguments - copy video for speed, re-encode audio for compatibility
-            if video_format == "mp4":
-                postproc_args = "ffmpeg:-c:v copy -c:a aac -b:a 320k -ar 48000"
-            elif video_format == "mkv":
-                postproc_args = "ffmpeg:-c:v copy -c:a aac -b:a 320k -ar 48000"
-            elif video_format == "webm":
-                postproc_args = "ffmpeg:-c:v copy -c:a libopus -b:a 320k -ar 48000"
-            elif video_format == "mov":
-                postproc_args = "ffmpeg:-c:v copy -c:a aac -b:a 320k -ar 48000"
-            elif video_format == "avi":
-                postproc_args = "ffmpeg:-c:v copy -c:a mp3 -b:a 320k -ar 48000"
+            if compression:
+                # Compression enabled - re-encode with specified bitrates
+                video_bitrate = compression['video_bitrate']
+                audio_bitrate = compression['audio_bitrate']
+                
+                self.update_console("=" * 60)
+                self.update_console("COMPRESSION ENABLED")
+                self.update_console(f"Target File Size: ~{compression['target_size']}MB")
+                self.update_console(f"Video Bitrate: {video_bitrate}kbps")
+                self.update_console(f"Audio Bitrate: {audio_bitrate}kbps")
+                self.update_console("Note: Compression requires re-encoding and will take longer.")
+                self.update_console("This is normal - the video must be processed to reduce size.")
+                self.update_console("=" * 60)
+                
+                # Build compression FFmpeg arguments
+                if video_format == "mp4":
+                    postproc_args = f"ffmpeg:-c:v libx264 -b:v {video_bitrate}k -maxrate {video_bitrate}k -bufsize {video_bitrate*2}k -preset medium -c:a aac -b:a {audio_bitrate}k -ar 48000"
+                elif video_format == "mkv":
+                    postproc_args = f"ffmpeg:-c:v libx264 -b:v {video_bitrate}k -maxrate {video_bitrate}k -bufsize {video_bitrate*2}k -preset medium -c:a aac -b:a {audio_bitrate}k -ar 48000"
+                elif video_format == "webm":
+                    postproc_args = f"ffmpeg:-c:v libvpx-vp9 -b:v {video_bitrate}k -maxrate {video_bitrate}k -bufsize {video_bitrate*2}k -c:a libopus -b:a {audio_bitrate}k -ar 48000"
+                elif video_format == "mov":
+                    postproc_args = f"ffmpeg:-c:v libx264 -b:v {video_bitrate}k -maxrate {video_bitrate}k -bufsize {video_bitrate*2}k -preset medium -c:a aac -b:a {audio_bitrate}k -ar 48000"
+                elif video_format == "avi":
+                    postproc_args = f"ffmpeg:-c:v libx264 -b:v {video_bitrate}k -maxrate {video_bitrate}k -bufsize {video_bitrate*2}k -preset medium -c:a mp3 -b:a {audio_bitrate}k -ar 48000"
+                else:
+                    postproc_args = f"ffmpeg:-c:v libx264 -b:v {video_bitrate}k -maxrate {video_bitrate}k -bufsize {video_bitrate*2}k -preset medium -c:a aac -b:a {audio_bitrate}k -ar 48000"
             else:
-                postproc_args = "ffmpeg:-c:v copy -c:a aac -b:a 320k -ar 48000"
+                # No compression - use high quality encoding for compatibility
+                # MP4 always uses H.264 for maximum compatibility with editing software
+                if video_format == "mp4":
+                    postproc_args = "ffmpeg:-c:v libx264 -crf 18 -preset slow -c:a aac -b:a 320k -ar 48000"
+                elif video_format == "mkv":
+                    postproc_args = "ffmpeg:-c:v copy -c:a aac -b:a 320k -ar 48000"
+                elif video_format == "webm":
+                    postproc_args = "ffmpeg:-c:v copy -c:a libopus -b:a 320k -ar 48000"
+                elif video_format == "mov":
+                    postproc_args = "ffmpeg:-c:v libx264 -crf 18 -preset slow -c:a aac -b:a 320k -ar 48000"
+                elif video_format == "avi":
+                    postproc_args = "ffmpeg:-c:v copy -c:a mp3 -b:a 320k -ar 48000"
+                else:
+                    postproc_args = "ffmpeg:-c:v copy -c:a aac -b:a 320k -ar 48000"
             
             cmd.extend([
                 "-f", "bestvideo*+bestaudio/best",
@@ -446,21 +772,34 @@ AUDIO FORMATS:
         else:
             # Audio command - best quality
             audio_format = self.audio_format_var.get()
+            # Map UI format to yt-dlp format (e.g., 'ogg' -> 'vorbis')
+            ytdlp_audio_format = self.map_audio_format(audio_format)
             
-            # Set audio quality based on format
-            if audio_format in ["mp3", "aac", "opus", "ogg"]:
-                # For lossy formats, use highest bitrate
-                audio_quality = "0"  # Best quality for VBR
-                bitrate = "320k"
-            else:
-                # For lossless formats (flac, wav, alac, m4a)
+            if compression:
+                # Compression enabled for audio
+                audio_bitrate = compression['audio_bitrate']
+                self.update_console("=" * 60)
+                self.update_console("COMPRESSION ENABLED (Audio)")
+                self.update_console(f"Audio Bitrate: {audio_bitrate}kbps")
+                self.update_console("Note: Lower bitrate reduces file size but may affect quality.")
+                self.update_console("=" * 60)
+                bitrate = f"{audio_bitrate}k"
                 audio_quality = "0"
-                bitrate = None
+            else:
+                # Set audio quality based on format
+                if audio_format in ["mp3", "aac", "opus", "ogg"]:
+                    # For lossy formats, use highest bitrate
+                    audio_quality = "0"  # Best quality for VBR
+                    bitrate = "320k"
+                else:
+                    # For lossless formats (flac, wav, alac, m4a)
+                    audio_quality = "0"
+                    bitrate = None
             
             cmd.extend([
                 "-f", "bestaudio/best",
                 "-x",  # Extract audio
-                "--audio-format", audio_format,
+                "--audio-format", ytdlp_audio_format,
                 "--audio-quality", audio_quality,
                 "--ffmpeg-location", self.ffmpeg_location,
             ])
