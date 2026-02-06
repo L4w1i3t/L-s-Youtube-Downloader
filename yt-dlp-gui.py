@@ -1,11 +1,22 @@
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
 import subprocess
 import os
 import threading
 import re
 import sys
 import platform
+import shutil
+
+IS_WINDOWS = platform.system() == "Windows"
+IS_MACOS = platform.system() == "Darwin"
+IS_LINUX = platform.system() == "Linux"
+
+def subprocess_flags():
+    """Return platform-appropriate subprocess creation flags."""
+    if IS_WINDOWS:
+        return subprocess.CREATE_NO_WINDOW
+    return 0
 
 class YtDlpGUI:
     def __init__(self, root):
@@ -38,156 +49,250 @@ class YtDlpGUI:
         self.root.minsize(1280, 720)  # Set minimum size to prevent cutting off content
         self.root.configure(bg="#f0f0f0")
         
+        # --- Button Styles ---
+        style = ttk.Style()
+        style.configure("Action.TButton",
+                        font=("Arial", 10, "bold"),
+                        padding=(16, 6))
+        style.configure("Secondary.TButton",
+                        font=("Arial", 9),
+                        padding=(10, 4))
+        
         # Configuration
-        # Check for local ffmpeg first, then fall back to C:\ffmpeg\bin
+        # Check for local ffmpeg first, then fall back to system paths
         local_ffmpeg = os.path.join(self.deps_path, "ffmpeg", "bin")
         if os.path.exists(local_ffmpeg):
             self.ffmpeg_location = local_ffmpeg
-        else:
+        elif IS_WINDOWS and os.path.exists("C:\\ffmpeg\\bin"):
             self.ffmpeg_location = "C:\\ffmpeg\\bin"
+        else:
+            # On Linux/macOS, ffmpeg is typically on PATH already
+            ffmpeg_path = shutil.which("ffmpeg")
+            self.ffmpeg_location = os.path.dirname(ffmpeg_path) if ffmpeg_path else ""
         
-        # Find user's desktop path
-        self.output_dir = os.path.join(os.path.join(os.environ['USERPROFILE']), 'Desktop')
+        # Find user's desktop path (cross-platform)
+        if IS_WINDOWS:
+            self.output_dir = os.path.join(os.environ.get('USERPROFILE', os.path.expanduser('~')), 'Desktop')
+        else:
+            self.output_dir = os.path.join(os.path.expanduser('~'), 'Desktop')
+            if not os.path.isdir(self.output_dir):
+                self.output_dir = os.path.expanduser('~')
         
-        # Set up the main frame
-        main_frame = ttk.Frame(root, padding="20")
-        main_frame.pack(fill=tk.BOTH, expand=True)
+        # Track which widget should receive mousewheel events
+        self._scroll_target = None
         
-        # Title
-        title_label = ttk.Label(main_frame, text="L's YouTube Downloader", font=("Arial", 18, "bold"))
-        title_label.pack(pady=(0, 20))
-
-        # User Output Directory (Default: Desktop, but can be changed by the user)
-        output_dir_frame = ttk.Frame(main_frame)
-        output_dir_frame.pack(fill=tk.X, pady=(0, 20))
+        # =====================================================================
+        # TOP-LEVEL LAYOUT: Header -> Notebook (tabs) -> Console -> Status Bar
+        # =====================================================================
         
-        output_dir_label = ttk.Label(output_dir_frame, text="Output Directory:")
-        output_dir_label.pack(anchor=tk.W)
+        # --- Status Bar (pack BOTTOM first so it's always visible) ---
+        self.status_var = tk.StringVar(value="Ready")
+        status_bar = ttk.Label(root, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W)
+        status_bar.pack(side=tk.BOTTOM, fill=tk.X)
         
-        self.output_dir_entry = ttk.Entry(output_dir_frame, width=70)
-        self.output_dir_entry.pack(fill=tk.X, pady=(5, 0))
+        # --- Header (shared across tabs) ---
+        header_frame = ttk.Frame(root, padding=(15, 12, 15, 0))
+        header_frame.pack(fill=tk.X)
+        
+        title_label = ttk.Label(header_frame, text="L's YouTube Downloader", font=("Arial", 16, "bold"))
+        title_label.pack(anchor=tk.W)
+        
+        # Output Directory (shared by both Downloader and Converter)
+        output_dir_row = ttk.LabelFrame(header_frame, text="Output Directory")
+        output_dir_row.pack(fill=tk.X, pady=(8, 0))
+        
+        output_dir_inner = ttk.Frame(output_dir_row)
+        output_dir_inner.pack(fill=tk.X, padx=10, pady=6)
+        
+        self.output_dir_entry = ttk.Entry(output_dir_inner, width=70)
+        self.output_dir_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
         self.output_dir_entry.insert(0, self.output_dir)
         
-        # URL Entry
-        url_frame = ttk.Frame(main_frame)
-        url_frame.pack(fill=tk.X, pady=(0, 20))
+        browse_output_btn = ttk.Button(output_dir_inner, text="Browse...",
+                                        command=self.browse_output_dir, style="Secondary.TButton")
+        browse_output_btn.pack(side=tk.LEFT, padx=(5, 0))
         
-        url_label = ttk.Label(url_frame, text="Enter YouTube URL:")
-        url_label.pack(anchor=tk.W)
+        # --- Console Output (shared, pack before notebook so it claims space at bottom) ---
+        console_frame = ttk.LabelFrame(root, text="Console Output")
+        console_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=15, pady=(0, 8))
+        
+        console_inner = ttk.Frame(console_frame)
+        console_inner.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        self.console = tk.Text(console_inner, wrap=tk.WORD, bg="#1e1e1e", fg="#00FF00",
+                               insertbackground="#00FF00", font=("Consolas", 9), height=12)
+        self.console.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        console_scroll = ttk.Scrollbar(console_inner, command=self.console.yview)
+        console_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.console.config(yscrollcommand=console_scroll.set)
+        
+        # Console mousewheel: scrolls the console only, never the background
+        def _console_mousewheel(event):
+            self.console.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            return "break"
+        self.console.bind("<MouseWheel>", _console_mousewheel)
+        self.console.bind("<Enter>", lambda e: setattr(self, '_scroll_target', 'console'))
+        self.console.bind("<Leave>", lambda e: setattr(self, '_scroll_target', None))
+        
+        # --- Notebook (tabs, fills remaining space between header and console) ---
+        self.notebook = ttk.Notebook(root)
+        self.notebook.pack(fill=tk.BOTH, expand=True, padx=15, pady=(8, 8))
+        
+        # =============================================================
+        # TAB 1: Downloader
+        # =============================================================
+        dl_tab = ttk.Frame(self.notebook)
+        self.notebook.add(dl_tab, text="  Downloader  ")
+        
+        # Scrollable canvas for the downloader tab
+        dl_canvas = tk.Canvas(dl_tab, bg="#f0f0f0", highlightthickness=0)
+        dl_scrollbar = ttk.Scrollbar(dl_tab, orient="vertical", command=dl_canvas.yview)
+        dl_frame = ttk.Frame(dl_canvas, padding=(15, 10))
+        
+        dl_frame.bind("<Configure>",
+                      lambda e: dl_canvas.configure(scrollregion=dl_canvas.bbox("all")))
+        dl_canvas_window = dl_canvas.create_window((0, 0), window=dl_frame, anchor="nw")
+        dl_canvas.configure(yscrollcommand=dl_scrollbar.set)
+        
+        def _configure_dl_canvas(event):
+            dl_canvas.itemconfig(dl_canvas_window, width=event.width)
+            dl_canvas.configure(scrollregion=dl_canvas.bbox("all"))
+        dl_canvas.bind("<Configure>", _configure_dl_canvas)
+        
+        dl_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        dl_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # Mousewheel for downloader canvas (only when hovering over it, not the console)
+        def _dl_mousewheel(event):
+            if self._scroll_target == 'console':
+                return
+            if dl_canvas.yview() != (0.0, 1.0):
+                dl_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        
+        dl_canvas.bind("<Enter>", lambda e: setattr(self, '_scroll_target', 'dl_canvas'))
+        dl_canvas.bind("<Leave>", lambda e: setattr(self, '_scroll_target', None))
+        
+        def _global_mousewheel(event):
+            if self._scroll_target == 'console':
+                return
+            if self._scroll_target == 'dl_canvas':
+                _dl_mousewheel(event)
+        root.bind_all("<MouseWheel>", _global_mousewheel)
+        
+        # --- YouTube URL ---
+        url_frame = ttk.LabelFrame(dl_frame, text="YouTube URL")
+        url_frame.pack(fill=tk.X, pady=(0, 10))
         
         self.url_entry = ttk.Entry(url_frame, width=70)
-        self.url_entry.pack(fill=tk.X, pady=(5, 0))
-        # Format Selection
-        format_frame = ttk.LabelFrame(main_frame, text="Download Format")
-        format_frame.pack(fill=tk.X, pady=(0, 20))
+        self.url_entry.pack(fill=tk.X, padx=10, pady=8)
         
-        # Video options with nested radio buttons
+        # --- Options ---
+        options_frame = ttk.LabelFrame(dl_frame, text="Options")
+        options_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        age_frame = ttk.Frame(options_frame)
+        age_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        self.age_limit_enabled = tk.BooleanVar(value=False)
+        age_limit_check = ttk.Checkbutton(
+            age_frame, text="Set Age Limit",
+            variable=self.age_limit_enabled,
+            command=self.update_age_limit_state
+        )
+        age_limit_check.pack(side=tk.LEFT)
+        
+        self.age_limit_inner = ttk.Frame(age_frame)
+        self.age_limit_inner.pack(side=tk.LEFT, padx=(10, 0))
+        
+        self.age_limit_entry = ttk.Entry(self.age_limit_inner, width=6)
+        self.age_limit_entry.pack(side=tk.LEFT)
+        self.age_limit_entry.insert(0, "18")
+        
+        age_limit_unit = ttk.Label(self.age_limit_inner, text="years")
+        age_limit_unit.pack(side=tk.LEFT, padx=(4, 0))
+        
+        age_limit_help = ttk.Label(
+            age_frame, text="(videos above this age gate are skipped)",
+            font=("Arial", 8), foreground="gray"
+        )
+        age_limit_help.pack(side=tk.LEFT, padx=(8, 0))
+        
+        self.update_age_limit_state()
+        
+        # --- Download Format ---
+        format_frame = ttk.LabelFrame(dl_frame, text="Download Format")
+        format_frame.pack(fill=tk.X, pady=(0, 10))
+        
         self.format_var = tk.StringVar(value="video")
+        
+        # Video row
         video_frame = ttk.Frame(format_frame)
         video_frame.pack(fill=tk.X, padx=10, pady=5)
         
-        video_radio = ttk.Radiobutton(video_frame, text="Video", variable=self.format_var, 
-                                    value="video", command=self.update_format_selection)
+        video_radio = ttk.Radiobutton(video_frame, text="Video", variable=self.format_var,
+                                      value="video", command=self.update_format_selection)
         video_radio.grid(row=0, column=0, sticky=tk.W)
         
-        # Video format options
         self.video_format_var = tk.StringVar(value="mp4")
         self.video_formats_frame = ttk.Frame(video_frame)
         self.video_formats_frame.grid(row=0, column=1, padx=(20, 0))
         
-        mp4_radio = ttk.Radiobutton(self.video_formats_frame, text="MP4", variable=self.video_format_var, value="mp4")
-        mp4_radio.pack(side=tk.LEFT, padx=10)
+        for fmt in ("MP4", "MKV", "WEBM", "AVI", "MOV"):
+            ttk.Radiobutton(self.video_formats_frame, text=fmt,
+                            variable=self.video_format_var,
+                            value=fmt.lower()).pack(side=tk.LEFT, padx=10)
         
-        mkv_radio = ttk.Radiobutton(self.video_formats_frame, text="MKV", variable=self.video_format_var, value="mkv")
-        mkv_radio.pack(side=tk.LEFT, padx=10)
-        
-        webm_radio = ttk.Radiobutton(self.video_formats_frame, text="WEBM", variable=self.video_format_var, value="webm")
-        webm_radio.pack(side=tk.LEFT, padx=10)
-        
-        avi_radio = ttk.Radiobutton(self.video_formats_frame, text="AVI", variable=self.video_format_var, value="avi")
-        avi_radio.pack(side=tk.LEFT, padx=10)
-        
-        mov_radio = ttk.Radiobutton(self.video_formats_frame, text="MOV", variable=self.video_format_var, value="mov")
-        mov_radio.pack(side=tk.LEFT, padx=10)
-        
-        # Audio options with nested radio buttons
+        # Audio row
         audio_frame = ttk.Frame(format_frame)
         audio_frame.pack(fill=tk.X, padx=10, pady=5)
         
-        audio_radio = ttk.Radiobutton(audio_frame, text="Audio", variable=self.format_var, 
-                                    value="audio", command=self.update_format_selection)
+        audio_radio = ttk.Radiobutton(audio_frame, text="Audio", variable=self.format_var,
+                                      value="audio", command=self.update_format_selection)
         audio_radio.grid(row=0, column=0, sticky=tk.W)
         
-        # Audio format options
         self.audio_format_var = tk.StringVar(value="mp3")
         self.audio_formats_frame = ttk.Frame(audio_frame)
         self.audio_formats_frame.grid(row=0, column=1, padx=(20, 0))
         
-        mp3_radio = ttk.Radiobutton(self.audio_formats_frame, text="MP3", variable=self.audio_format_var, value="mp3")
-        mp3_radio.pack(side=tk.LEFT, padx=10)
+        for fmt in ("MP3", "AAC", "M4A", "OPUS", "FLAC", "WAV", "OGG", "ALAC"):
+            ttk.Radiobutton(self.audio_formats_frame, text=fmt,
+                            variable=self.audio_format_var,
+                            value=fmt.lower()).pack(side=tk.LEFT, padx=10)
         
-        aac_radio = ttk.Radiobutton(self.audio_formats_frame, text="AAC", variable=self.audio_format_var, value="aac")
-        aac_radio.pack(side=tk.LEFT, padx=10)
-        
-        m4a_radio = ttk.Radiobutton(self.audio_formats_frame, text="M4A", variable=self.audio_format_var, value="m4a")
-        m4a_radio.pack(side=tk.LEFT, padx=10)
-        
-        opus_radio = ttk.Radiobutton(self.audio_formats_frame, text="OPUS", variable=self.audio_format_var, value="opus")
-        opus_radio.pack(side=tk.LEFT, padx=10)
-        
-        flac_radio = ttk.Radiobutton(self.audio_formats_frame, text="FLAC", variable=self.audio_format_var, value="flac")
-        flac_radio.pack(side=tk.LEFT, padx=10)
-        
-        wav_radio = ttk.Radiobutton(self.audio_formats_frame, text="WAV", variable=self.audio_format_var, value="wav")
-        wav_radio.pack(side=tk.LEFT, padx=10)
-        
-        ogg_radio = ttk.Radiobutton(self.audio_formats_frame, text="OGG", variable=self.audio_format_var, value="ogg")
-        ogg_radio.pack(side=tk.LEFT, padx=10)
-        
-        alac_radio = ttk.Radiobutton(self.audio_formats_frame, text="ALAC", variable=self.audio_format_var, value="alac")
-        alac_radio.pack(side=tk.LEFT, padx=10)
-        
-        # Initialize the state of the format options based on initial selection
         self.update_format_selection()
         
-        # Compression Options
-        compression_frame = ttk.LabelFrame(main_frame, text="Compression (Optional)")
-        compression_frame.pack(fill=tk.X, pady=(0, 20))
+        # --- Compression ---
+        compression_frame = ttk.LabelFrame(dl_frame, text="Compression (Optional)")
+        compression_frame.pack(fill=tk.X, pady=(0, 10))
         
-        # Enable compression checkbox
         self.compression_enabled = tk.BooleanVar(value=False)
-        compression_check = ttk.Checkbutton(compression_frame, text="Enable Compression", 
-                                           variable=self.compression_enabled, 
-                                           command=self.update_compression_state)
+        compression_check = ttk.Checkbutton(compression_frame, text="Enable Compression",
+                                            variable=self.compression_enabled,
+                                            command=self.update_compression_state)
         compression_check.pack(anchor=tk.W, padx=10, pady=(5, 10))
         
-        # Compression mode selection
         self.compression_mode_var = tk.StringVar(value="simple")
         
         mode_frame = ttk.Frame(compression_frame)
         mode_frame.pack(fill=tk.X, padx=20, pady=(0, 10))
         
-        simple_radio = ttk.Radiobutton(mode_frame, text="Simple Mode (Presets)", 
-                                      variable=self.compression_mode_var, 
-                                      value="simple", 
-                                      command=self.update_compression_mode)
-        simple_radio.pack(anchor=tk.W)
+        ttk.Radiobutton(mode_frame, text="Simple Mode (Presets)",
+                        variable=self.compression_mode_var, value="simple",
+                        command=self.update_compression_mode).pack(anchor=tk.W)
+        ttk.Radiobutton(mode_frame, text="Advanced Mode (Custom Settings)",
+                        variable=self.compression_mode_var, value="advanced",
+                        command=self.update_compression_mode).pack(anchor=tk.W)
         
-        advanced_radio = ttk.Radiobutton(mode_frame, text="Advanced Mode (Custom Settings)", 
-                                        variable=self.compression_mode_var, 
-                                        value="advanced", 
-                                        command=self.update_compression_mode)
-        advanced_radio.pack(anchor=tk.W)
-        
-        # Simple Mode - Presets
+        # Simple Mode
         self.simple_frame = ttk.Frame(compression_frame)
         self.simple_frame.pack(fill=tk.X, padx=30, pady=(5, 10))
         
-        preset_label = ttk.Label(self.simple_frame, text="Preset:")
-        preset_label.pack(anchor=tk.W)
+        ttk.Label(self.simple_frame, text="Preset:").pack(anchor=tk.W)
         
         self.preset_var = tk.StringVar(value="discord_8mb")
-        preset_combo = ttk.Combobox(self.simple_frame, textvariable=self.preset_var, state="readonly", width=40)
+        preset_combo = ttk.Combobox(self.simple_frame, textvariable=self.preset_var,
+                                    state="readonly", width=40)
         preset_combo['values'] = (
             'Discord 8MB (Video)',
             'Discord 25MB (Nitro Classic)',
@@ -201,74 +306,514 @@ class YtDlpGUI:
         preset_combo.current(0)
         preset_combo.pack(fill=tk.X, pady=(5, 0))
         
-        # Advanced Mode - Custom Settings
+        # Advanced Mode
         self.advanced_frame = ttk.Frame(compression_frame)
         self.advanced_frame.pack(fill=tk.X, padx=30, pady=(5, 10))
         
-        # Target file size
         target_size_frame = ttk.Frame(self.advanced_frame)
         target_size_frame.pack(fill=tk.X, pady=(0, 8))
-        
-        target_size_label = ttk.Label(target_size_frame, text="Target File Size (MB):")
-        target_size_label.pack(side=tk.LEFT)
-        
+        ttk.Label(target_size_frame, text="Target File Size (MB):").pack(side=tk.LEFT)
         self.target_size_entry = ttk.Entry(target_size_frame, width=15)
         self.target_size_entry.pack(side=tk.LEFT, padx=(10, 0))
         self.target_size_entry.insert(0, "8")
         
-        # Video bitrate
         video_bitrate_frame = ttk.Frame(self.advanced_frame)
         video_bitrate_frame.pack(fill=tk.X, pady=(0, 8))
-        
-        video_bitrate_label = ttk.Label(video_bitrate_frame, text="Video Bitrate (kbps):")
-        video_bitrate_label.pack(side=tk.LEFT)
-        
+        ttk.Label(video_bitrate_frame, text="Video Bitrate (kbps):").pack(side=tk.LEFT)
         self.video_bitrate_entry = ttk.Entry(video_bitrate_frame, width=15)
         self.video_bitrate_entry.pack(side=tk.LEFT, padx=(10, 0))
         self.video_bitrate_entry.insert(0, "500")
+        ttk.Label(video_bitrate_frame, text="(Leave empty to auto-calculate from file size)",
+                  font=("Arial", 8), foreground="gray").pack(side=tk.LEFT, padx=(10, 0))
         
-        bitrate_help = ttk.Label(video_bitrate_frame, text="(Leave empty to auto-calculate from file size)", 
-                                font=("Arial", 8), foreground="gray")
-        bitrate_help.pack(side=tk.LEFT, padx=(10, 0))
-        
-        # Audio bitrate
         audio_bitrate_frame = ttk.Frame(self.advanced_frame)
         audio_bitrate_frame.pack(fill=tk.X, pady=(0, 8))
-        
-        audio_bitrate_label = ttk.Label(audio_bitrate_frame, text="Audio Bitrate (kbps):")
-        audio_bitrate_label.pack(side=tk.LEFT)
-        
+        ttk.Label(audio_bitrate_frame, text="Audio Bitrate (kbps):").pack(side=tk.LEFT)
         self.audio_bitrate_entry = ttk.Entry(audio_bitrate_frame, width=15)
         self.audio_bitrate_entry.pack(side=tk.LEFT, padx=(10, 0))
         self.audio_bitrate_entry.insert(0, "128")
         
-        # Initialize compression state
         self.update_compression_state()
         
-        # Format Help Button
-        help_button = ttk.Button(main_frame, text="Format Guide", command=self.show_format_guide)
-        help_button.pack(pady=(10, 0))
+        # --- Downloader Action Bar ---
+        dl_action_frame = ttk.Frame(dl_frame)
+        dl_action_frame.pack(fill=tk.X, pady=(5, 10))
         
-        # Download Button
-        self.download_button = ttk.Button(main_frame, text="Download", command=self.start_download)
-        self.download_button.pack(pady=(0, 20))
+        self.download_button = ttk.Button(dl_action_frame, text="Download",
+                                            command=self.start_download, style="Action.TButton")
+        self.download_button.pack(side=tk.LEFT)
         
-        # Console Output
-        console_frame = ttk.LabelFrame(main_frame, text="Console Output")
-        console_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+        help_button = ttk.Button(dl_action_frame, text="Format Guide",
+                                 command=self.show_format_guide, style="Secondary.TButton")
+        help_button.pack(side=tk.RIGHT)
         
-        self.console = tk.Text(console_frame, wrap=tk.WORD, bg="#000000", fg="#00FF00", height=12)
-        self.console.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        # =============================================================
+        # TAB 2: File Converter
+        # =============================================================
+        conv_tab = ttk.Frame(self.notebook)
+        self.notebook.add(conv_tab, text="  File Converter  ")
         
-        # Scrollbar for console
-        scrollbar = ttk.Scrollbar(self.console, command=self.console.yview)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.console.config(yscrollcommand=scrollbar.set)
+        # Scrollable canvas for the converter tab
+        conv_canvas = tk.Canvas(conv_tab, bg="#f0f0f0", highlightthickness=0)
+        conv_scrollbar = ttk.Scrollbar(conv_tab, orient="vertical", command=conv_canvas.yview)
+        conv_frame = ttk.Frame(conv_canvas, padding=(15, 10))
         
-        # Status bar
-        self.status_var = tk.StringVar(value="Ready")
-        status_bar = ttk.Label(root, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W)
-        status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+        conv_frame.bind("<Configure>",
+                        lambda e: conv_canvas.configure(scrollregion=conv_canvas.bbox("all")))
+        conv_canvas_window = conv_canvas.create_window((0, 0), window=conv_frame, anchor="nw")
+        conv_canvas.configure(yscrollcommand=conv_scrollbar.set)
+        
+        def _configure_conv_canvas(event):
+            conv_canvas.itemconfig(conv_canvas_window, width=event.width)
+            conv_canvas.configure(scrollregion=conv_canvas.bbox("all"))
+        conv_canvas.bind("<Configure>", _configure_conv_canvas)
+        
+        conv_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        conv_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # Mousewheel for converter canvas
+        def _conv_mousewheel(event):
+            if self._scroll_target == 'console':
+                return
+            if conv_canvas.yview() != (0.0, 1.0):
+                conv_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        
+        conv_canvas.bind("<Enter>", lambda e: setattr(self, '_scroll_target', 'conv_canvas'))
+        conv_canvas.bind("<Leave>", lambda e: setattr(self, '_scroll_target', None))
+        
+        # Update global mousewheel handler to include converter canvas
+        def _global_mousewheel_updated(event):
+            if self._scroll_target == 'console':
+                return
+            if self._scroll_target == 'dl_canvas':
+                _dl_mousewheel(event)
+            elif self._scroll_target == 'conv_canvas':
+                _conv_mousewheel(event)
+        root.bind_all("<MouseWheel>", _global_mousewheel_updated)
+        
+        # Input file
+        input_frame = ttk.LabelFrame(conv_frame, text="Input File")
+        input_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        input_row = ttk.Frame(input_frame)
+        input_row.pack(fill=tk.X, padx=10, pady=8)
+        
+        self.converter_input_entry = ttk.Entry(input_row, width=60)
+        self.converter_input_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        
+        ttk.Button(input_row, text="Browse...",
+                   command=self.browse_converter_input,
+                   style="Secondary.TButton").pack(side=tk.LEFT, padx=(5, 0))
+        
+        # Output format
+        format_conv_frame = ttk.LabelFrame(conv_frame, text="Output Format")
+        format_conv_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        format_conv_inner = ttk.Frame(format_conv_frame)
+        format_conv_inner.pack(fill=tk.X, padx=10, pady=8)
+        
+        self.converter_format_var = tk.StringVar(value="mp4")
+        converter_format_combo = ttk.Combobox(
+            format_conv_inner, textvariable=self.converter_format_var,
+            state="readonly", width=20
+        )
+        converter_format_combo['values'] = (
+            'mp4', 'mkv', 'webm', 'avi', 'mov',
+            'mp3', 'aac', 'm4a', 'opus', 'flac', 'wav', 'ogg', 'alac'
+        )
+        converter_format_combo.pack(side=tk.LEFT)
+        
+        ttk.Label(format_conv_inner,
+                  text="Supports video-to-video, audio-to-audio, and video-to-audio conversion.",
+                  font=("Arial", 8), foreground="gray").pack(side=tk.LEFT, padx=(12, 0))
+        
+        # --- Converter Compression (mirrors Downloader compression) ---
+        conv_compress_frame = ttk.LabelFrame(conv_frame, text="Compression (Optional)")
+        conv_compress_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        self.conv_compress_enabled = tk.BooleanVar(value=False)
+        conv_compress_check = ttk.Checkbutton(
+            conv_compress_frame, text="Enable Compression",
+            variable=self.conv_compress_enabled,
+            command=self.update_conv_compress_state
+        )
+        conv_compress_check.pack(anchor=tk.W, padx=10, pady=(5, 10))
+        
+        self.conv_compress_mode_var = tk.StringVar(value="simple")
+        
+        conv_mode_frame = ttk.Frame(conv_compress_frame)
+        conv_mode_frame.pack(fill=tk.X, padx=20, pady=(0, 10))
+        
+        ttk.Radiobutton(conv_mode_frame, text="Simple Mode (Presets)",
+                        variable=self.conv_compress_mode_var, value="simple",
+                        command=self.update_conv_compress_mode).pack(anchor=tk.W)
+        ttk.Radiobutton(conv_mode_frame, text="Advanced Mode (Custom Settings)",
+                        variable=self.conv_compress_mode_var, value="advanced",
+                        command=self.update_conv_compress_mode).pack(anchor=tk.W)
+        
+        # Simple Mode
+        self.conv_simple_frame = ttk.Frame(conv_compress_frame)
+        self.conv_simple_frame.pack(fill=tk.X, padx=30, pady=(5, 10))
+        
+        ttk.Label(self.conv_simple_frame, text="Preset:").pack(anchor=tk.W)
+        
+        self.conv_preset_var = tk.StringVar(value="Discord 8MB (Video)")
+        conv_preset_combo = ttk.Combobox(self.conv_simple_frame, textvariable=self.conv_preset_var,
+                                         state="readonly", width=40)
+        conv_preset_combo['values'] = (
+            'Discord 8MB (Video)',
+            'Discord 25MB (Nitro Classic)',
+            'Discord 50MB (Nitro)',
+            'Discord 100MB (Nitro Boost)',
+            'Twitter/X 512MB',
+            'Instagram 100MB',
+            'WhatsApp 16MB',
+            'Telegram 2GB'
+        )
+        conv_preset_combo.current(0)
+        conv_preset_combo.pack(fill=tk.X, pady=(5, 0))
+        
+        # Advanced Mode
+        self.conv_advanced_frame = ttk.Frame(conv_compress_frame)
+        self.conv_advanced_frame.pack(fill=tk.X, padx=30, pady=(5, 10))
+        
+        conv_target_frame = ttk.Frame(self.conv_advanced_frame)
+        conv_target_frame.pack(fill=tk.X, pady=(0, 8))
+        ttk.Label(conv_target_frame, text="Target File Size (MB):").pack(side=tk.LEFT)
+        self.conv_target_size_entry = ttk.Entry(conv_target_frame, width=15)
+        self.conv_target_size_entry.pack(side=tk.LEFT, padx=(10, 0))
+        self.conv_target_size_entry.insert(0, "8")
+        
+        conv_vbitrate_frame = ttk.Frame(self.conv_advanced_frame)
+        conv_vbitrate_frame.pack(fill=tk.X, pady=(0, 8))
+        ttk.Label(conv_vbitrate_frame, text="Video Bitrate (kbps):").pack(side=tk.LEFT)
+        self.conv_video_bitrate_entry = ttk.Entry(conv_vbitrate_frame, width=15)
+        self.conv_video_bitrate_entry.pack(side=tk.LEFT, padx=(10, 0))
+        self.conv_video_bitrate_entry.insert(0, "500")
+        ttk.Label(conv_vbitrate_frame, text="(Leave empty to auto-calculate from file size)",
+                  font=("Arial", 8), foreground="gray").pack(side=tk.LEFT, padx=(10, 0))
+        
+        conv_abitrate_frame = ttk.Frame(self.conv_advanced_frame)
+        conv_abitrate_frame.pack(fill=tk.X, pady=(0, 8))
+        ttk.Label(conv_abitrate_frame, text="Audio Bitrate (kbps):").pack(side=tk.LEFT)
+        self.conv_audio_bitrate_entry = ttk.Entry(conv_abitrate_frame, width=15)
+        self.conv_audio_bitrate_entry.pack(side=tk.LEFT, padx=(10, 0))
+        self.conv_audio_bitrate_entry.insert(0, "128")
+        
+        self.update_conv_compress_state()
+        
+        # Convert button
+        self.convert_button = ttk.Button(conv_frame, text="Convert",
+                                         command=self.start_conversion, style="Action.TButton")
+        self.convert_button.pack(anchor=tk.W, pady=(5, 0))
+    
+    def update_age_limit_state(self):
+        """Show/hide the age limit entry"""
+        if self.age_limit_enabled.get():
+            self.age_limit_inner.pack(side=tk.LEFT, padx=(10, 0))
+        else:
+            self.age_limit_inner.pack_forget()
+    
+    def update_conv_compress_state(self):
+        """Enable/disable converter compression options based on checkbox"""
+        state = "normal" if self.conv_compress_enabled.get() else "disabled"
+        
+        for frame in (self.conv_simple_frame, self.conv_advanced_frame):
+            for child in frame.winfo_children():
+                if isinstance(child, (ttk.Combobox, ttk.Entry, ttk.Radiobutton)):
+                    child.configure(state=state)
+                elif isinstance(child, ttk.Frame):
+                    for subchild in child.winfo_children():
+                        if isinstance(subchild, (ttk.Combobox, ttk.Entry, ttk.Radiobutton)):
+                            subchild.configure(state=state)
+        
+        self.update_conv_compress_mode()
+    
+    def update_conv_compress_mode(self):
+        """Show/hide converter compression mode frames based on selection"""
+        if not self.conv_compress_enabled.get():
+            self.conv_simple_frame.pack_forget()
+            self.conv_advanced_frame.pack_forget()
+        elif self.conv_compress_mode_var.get() == "simple":
+            self.conv_advanced_frame.pack_forget()
+            self.conv_simple_frame.pack(fill=tk.X, padx=30, pady=(5, 10))
+        else:
+            self.conv_simple_frame.pack_forget()
+            self.conv_advanced_frame.pack(fill=tk.X, padx=30, pady=(5, 10))
+    
+    def get_conv_compression_settings(self, duration=None):
+        """Calculate converter compression settings (mirrors get_compression_settings)."""
+        if not self.conv_compress_enabled.get():
+            return None
+        
+        if self.conv_compress_mode_var.get() == "simple":
+            preset = self.conv_preset_var.get()
+            
+            preset_map = {
+                'Discord 8MB (Video)': (8, 96),
+                'Discord 25MB (Nitro Classic)': (25, 128),
+                'Discord 50MB (Nitro)': (50, 128),
+                'Discord 100MB (Nitro Boost)': (100, 192),
+                'Twitter/X 512MB': (512, 192),
+                'Instagram 100MB': (100, 192),
+                'WhatsApp 16MB': (16, 96),
+                'Telegram 2GB': (2048, 256)
+            }
+            
+            target_size_mb, audio_bitrate = preset_map.get(preset, (8, 96))
+            est = duration if duration else 180
+            video_bitrate = self.calculate_bitrates_for_target_size(target_size_mb, est, audio_bitrate)
+            
+            return {
+                'target_size': target_size_mb,
+                'video_bitrate': video_bitrate,
+                'audio_bitrate': audio_bitrate
+            }
+        else:
+            try:
+                target_size = float(self.conv_target_size_entry.get() or "8")
+                video_bitrate_str = self.conv_video_bitrate_entry.get().strip()
+                audio_bitrate = int(self.conv_audio_bitrate_entry.get() or "128")
+                
+                if video_bitrate_str:
+                    video_bitrate = int(video_bitrate_str)
+                else:
+                    est = duration if duration else 180
+                    video_bitrate = self.calculate_bitrates_for_target_size(target_size, est, audio_bitrate)
+                
+                return {
+                    'target_size': target_size,
+                    'video_bitrate': video_bitrate,
+                    'audio_bitrate': audio_bitrate
+                }
+            except ValueError:
+                self.update_console("Warning: Invalid compression settings, using defaults")
+                return {
+                    'target_size': 8,
+                    'video_bitrate': 500,
+                    'audio_bitrate': 96
+                }
+    
+    def browse_output_dir(self):
+        """Open folder dialog to select the output directory"""
+        directory = filedialog.askdirectory(title="Select Output Directory", initialdir=self.output_dir_entry.get())
+        if directory:
+            self.output_dir_entry.delete(0, tk.END)
+            self.output_dir_entry.insert(0, directory)
+    
+    def browse_converter_input(self):
+        """Open file dialog to select the input file for conversion"""
+        filetypes = [
+            ("Media Files", "*.mp4 *.mkv *.webm *.avi *.mov *.mp3 *.aac *.m4a *.opus *.flac *.wav *.ogg *.alac *.wma *.wmv *.ts *.flv"),
+            ("All Files", "*.*")
+        ]
+        filepath = filedialog.askopenfilename(title="Select Input File", filetypes=filetypes)
+        if filepath:
+            self.converter_input_entry.delete(0, tk.END)
+            self.converter_input_entry.insert(0, filepath)
+    
+    def start_conversion(self):
+        """Start the local file conversion process"""
+        input_path = self.converter_input_entry.get().strip()
+        if not input_path:
+            messagebox.showerror("Error", "Please select an input file.")
+            return
+        if not os.path.isfile(input_path):
+            messagebox.showerror("Error", "The selected input file does not exist.")
+            return
+        
+        if not self.update_output_directory():
+            return
+        
+        output_format = self.converter_format_var.get()
+        input_name = os.path.splitext(os.path.basename(input_path))[0]
+        output_path = os.path.join(self.output_dir, f"{input_name}.{output_format}")
+        
+        # Prevent overwriting the input file
+        if os.path.abspath(input_path) == os.path.abspath(output_path):
+            messagebox.showerror("Error", "Output format is the same as input. Choose a different format.")
+            return
+        
+        # Clear console and disable buttons
+        self.console.delete(1.0, tk.END)
+        self.convert_button.config(state=tk.DISABLED)
+        self.download_button.config(state=tk.DISABLED)
+        self.status_var.set("Converting...")
+        
+        target_size_mb = self.get_conv_compression_settings()
+        threading.Thread(target=self.run_conversion,
+                         args=(input_path, output_path, output_format, target_size_mb),
+                         daemon=True).start()
+    
+    def get_media_duration(self, filepath):
+        """Get the duration of a media file in seconds using ffprobe."""
+        try:
+            if self.ffmpeg_location:
+                probe = os.path.join(self.ffmpeg_location, "ffprobe.exe" if IS_WINDOWS else "ffprobe")
+                if not os.path.isfile(probe):
+                    probe = "ffprobe"
+            else:
+                probe = "ffprobe"
+            
+            result = subprocess.run(
+                [probe, "-v", "error", "-show_entries", "format=duration",
+                 "-of", "default=noprint_wrappers=1:nokey=1", filepath],
+                capture_output=True, text=True, creationflags=subprocess_flags()
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return float(result.stdout.strip())
+        except Exception:
+            pass
+        return None
+    
+    def run_conversion(self, input_path, output_path, output_format, compression=None):
+        """Run ffmpeg conversion in a separate thread.
+        compression: dict with 'target_size', 'video_bitrate', 'audio_bitrate' or None."""
+        try:
+            # Determine ffmpeg executable path
+            if self.ffmpeg_location:
+                ffmpeg_exe = os.path.join(self.ffmpeg_location, "ffmpeg") if not IS_WINDOWS else os.path.join(self.ffmpeg_location, "ffmpeg.exe")
+                if not os.path.isfile(ffmpeg_exe):
+                    ffmpeg_exe = "ffmpeg"
+            else:
+                ffmpeg_exe = "ffmpeg"
+            
+            audio_only_formats = ('mp3', 'aac', 'm4a', 'opus', 'flac', 'wav', 'ogg', 'alac')
+            is_audio_output = output_format in audio_only_formats
+            duration = None
+            skip_compression_due_to_size = False
+            
+            # --- File-size guard: skip compression if file is already under target ---
+            if compression:
+                target_size_mb = compression['target_size']
+                input_size_bytes = os.path.getsize(input_path)
+                input_size_mb = input_size_bytes / (1024 * 1024)
+                
+                if input_size_mb <= target_size_mb:
+                    self.update_console("=" * 50)
+                    self.update_console(f"Input file is already {input_size_mb:.1f}MB, which is")
+                    self.update_console(f"under the {target_size_mb}MB target. Using stream copy")
+                    self.update_console(f"to avoid unnecessary re-encoding and size bloat.")
+                    self.update_console("=" * 50)
+                    compression = None
+                    skip_compression_due_to_size = True
+                else:
+                    # Recalculate bitrates with actual file duration for accuracy
+                    duration = self.get_media_duration(input_path)
+                    if not duration or duration <= 0:
+                        self.update_console("Warning: Could not determine duration, estimating 3 minutes.")
+                        duration = 180
+                    compression = self.get_conv_compression_settings(duration)
+            
+            cmd = [ffmpeg_exe, "-i", input_path, "-y"]
+            
+            # --- Compression path: use pre-calculated bitrates ---
+            if compression and not is_audio_output:
+                video_bitrate = compression['video_bitrate']
+                audio_bitrate = compression['audio_bitrate']
+                target_size_mb = compression['target_size']
+                
+                # Re-use cached duration if available, otherwise fetch
+                if not duration or duration <= 0:
+                    duration = self.get_media_duration(input_path) or 180
+                
+                self.update_console("=" * 50)
+                self.update_console(f"COMPRESSING to ~{target_size_mb}MB")
+                self.update_console(f"Duration: {int(duration // 60)}m {int(duration % 60)}s")
+                self.update_console(f"Video bitrate: {video_bitrate}kbps  |  Audio bitrate: {audio_bitrate}kbps")
+                self.update_console("=" * 50)
+                
+                # Format-specific compressed encoding
+                if output_format == "webm":
+                    cmd.extend(['-c:v', 'libvpx-vp9',
+                                '-b:v', f'{video_bitrate}k', '-maxrate', f'{video_bitrate}k',
+                                '-bufsize', f'{video_bitrate * 2}k',
+                                '-c:a', 'libopus', '-b:a', f'{audio_bitrate}k', '-ar', '48000'])
+                else:
+                    cmd.extend(['-c:v', 'libx264',
+                                '-b:v', f'{video_bitrate}k', '-maxrate', f'{video_bitrate}k',
+                                '-bufsize', f'{video_bitrate * 2}k', '-preset', 'medium',
+                                '-c:a', 'aac', '-b:a', f'{audio_bitrate}k', '-ar', '48000'])
+            elif is_audio_output:
+                # Audio output: strip video, encode audio
+                cmd.append("-vn")
+                if compression:
+                    # Compressed audio: calculate bitrate from target size and duration
+                    if not duration:
+                        duration = self.get_media_duration(input_path)
+                        if not duration or duration <= 0:
+                            duration = 180
+                    audio_kbps = max(32, int((compression['target_size'] * 8192) / duration * 0.98))
+                    self.update_console(f"Compressing audio to ~{compression['target_size']}MB ({audio_kbps}kbps)")
+                    codec_map = {
+                        'mp3': ['-c:a', 'libmp3lame'], 'aac': ['-c:a', 'aac'],
+                        'm4a': ['-c:a', 'aac'], 'opus': ['-c:a', 'libopus'],
+                        'ogg': ['-c:a', 'libvorbis'],
+                    }
+                    cmd.extend(codec_map.get(output_format, ['-c:a', 'libmp3lame']))
+                    cmd.extend(['-b:a', f'{audio_kbps}k'])
+                else:
+                    codec_map = {
+                        'mp3': ['-c:a', 'libmp3lame', '-b:a', '320k'],
+                        'aac': ['-c:a', 'aac', '-b:a', '320k'],
+                        'm4a': ['-c:a', 'aac', '-b:a', '320k'],
+                        'opus': ['-c:a', 'libopus', '-b:a', '320k'],
+                        'flac': ['-c:a', 'flac'],
+                        'wav': ['-c:a', 'pcm_s16le'],
+                        'ogg': ['-c:a', 'libvorbis', '-b:a', '320k'],
+                        'alac': ['-c:a', 'alac'],
+                    }
+                    cmd.extend(codec_map.get(output_format, ['-c:a', 'copy']))
+            else:
+                # Video output without compression: use stream copy if skipped due to size, otherwise high quality
+                if skip_compression_due_to_size:
+                    cmd.extend(['-c:v', 'copy', '-c:a', 'copy'])
+                else:
+                    codec_map = {
+                        'mp4': ['-c:v', 'libx264', '-crf', '18', '-preset', 'slow', '-c:a', 'aac', '-b:a', '320k'],
+                        'mkv': ['-c:v', 'copy', '-c:a', 'copy'],
+                        'webm': ['-c:v', 'libvpx-vp9', '-crf', '30', '-b:v', '0', '-c:a', 'libopus', '-b:a', '320k'],
+                        'avi': ['-c:v', 'copy', '-c:a', 'mp3', '-b:a', '320k'],
+                        'mov': ['-c:v', 'libx264', '-crf', '18', '-preset', 'slow', '-c:a', 'aac', '-b:a', '320k'],
+                    }
+                    cmd.extend(codec_map.get(output_format, ['-c:v', 'copy', '-c:a', 'copy']))
+            
+            cmd.append(output_path)
+            
+            self.update_console(f"Converting: {os.path.basename(input_path)} -> {os.path.basename(output_path)}")
+            self.update_console(f"Running: {' '.join(cmd)}")
+            
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding='utf-8',
+                errors='replace',
+                creationflags=subprocess_flags()
+            )
+            
+            while True:
+                output = process.stdout.readline()
+                if output == '' and process.poll() is not None:
+                    break
+                if output:
+                    self.update_console(output.strip())
+            
+            if process.poll() == 0:
+                self.update_console(f"\nConversion completed successfully!")
+                self.update_console(f"Output: {output_path}")
+                self.status_var.set("Conversion completed")
+            else:
+                self.update_console(f"\nConversion failed with return code: {process.poll()}")
+                self.status_var.set("Conversion failed")
+        except Exception as e:
+            self.update_console(f"Error: {str(e)}")
+            self.status_var.set("Error occurred")
+        finally:
+            self.convert_button.config(state=tk.NORMAL)
+            self.download_button.config(state=tk.NORMAL)
+    
     def update_format_selection(self):
         """Update UI based on selected format option"""
         # Enable/disable format options based on the selected main format
@@ -437,7 +982,8 @@ AUDIO FORMATS:
         text_widget.config(state=tk.DISABLED)  # Make read-only
         
         # Close button
-        close_button = ttk.Button(frame, text="Close", command=guide_window.destroy)
+        close_button = ttk.Button(frame, text="Close", command=guide_window.destroy,
+                                   style="Secondary.TButton")
         close_button.pack(pady=(15, 0))
 
     def update_output_directory(self):
@@ -508,7 +1054,7 @@ AUDIO FORMATS:
                 text=True,
                 encoding='utf-8',
                 errors='replace',
-                creationflags=subprocess.CREATE_NO_WINDOW
+                creationflags=subprocess_flags()
             )
             
             # Stream the output
@@ -575,12 +1121,7 @@ AUDIO FORMATS:
     def get_video_duration(self, url):
         """Fetch video duration in seconds"""
         try:
-            # Check for local yt-dlp.exe first
-            local_ytdlp = os.path.join(self.deps_path, "yt-dlp.exe")
-            if os.path.exists(local_ytdlp):
-                ytdlp_cmd = local_ytdlp
-            else:
-                ytdlp_cmd = "yt-dlp"
+            ytdlp_cmd = self.find_ytdlp()
             
             self.update_console("Fetching video information to calculate compression...")
             
@@ -589,7 +1130,7 @@ AUDIO FORMATS:
                 [ytdlp_cmd, "--print", "duration", url],
                 capture_output=True,
                 text=True,
-                creationflags=subprocess.CREATE_NO_WINDOW
+                creationflags=subprocess_flags()
             )
             
             if result.returncode == 0 and result.stdout.strip():
@@ -695,16 +1236,27 @@ AUDIO FORMATS:
                     'audio_bitrate': 96
                 }
     
+    def find_ytdlp(self):
+        """Locate the yt-dlp binary (cross-platform)"""
+        if IS_WINDOWS:
+            local_ytdlp = os.path.join(self.deps_path, "yt-dlp.exe")
+        else:
+            local_ytdlp = os.path.join(self.deps_path, "yt-dlp")
+        
+        if os.path.exists(local_ytdlp):
+            return local_ytdlp
+        return "yt-dlp"
+    
     def build_command(self, url):
         """Build the yt-dlp command based on selected options"""
-        # Check for local yt-dlp.exe first
-        local_ytdlp = os.path.join(self.deps_path, "yt-dlp.exe")
-        if os.path.exists(local_ytdlp):
-            ytdlp_cmd = local_ytdlp
-        else:
-            ytdlp_cmd = "yt-dlp"
-        
+        ytdlp_cmd = self.find_ytdlp()
         cmd = [ytdlp_cmd, "--js-runtimes", "node"]
+        
+        # Add age limit if enabled
+        if self.age_limit_enabled.get():
+            age_limit = self.age_limit_entry.get().strip() or "18"
+            cmd.extend(["--age-limit", age_limit])
+            self.update_console(f"Setting age limit to {age_limit} years")
         
         # Get video duration if compression is enabled
         duration = None
@@ -761,12 +1313,13 @@ AUDIO FORMATS:
                 else:
                     postproc_args = "ffmpeg:-c:v copy -c:a aac -b:a 320k -ar 48000"
             
+            output_template = os.path.join(self.output_dir, "%(title)s.%(ext)s")
             cmd.extend([
                 "-f", "bestvideo*+bestaudio/best",
                 "--merge-output-format", video_format,
                 "--ffmpeg-location", self.ffmpeg_location,
                 "--postprocessor-args", postproc_args,
-                "-o", f"{self.output_dir}\\%(title)s.%(ext)s",
+                "-o", output_template,
                 url
             ])
         else:
@@ -809,8 +1362,9 @@ AUDIO FORMATS:
             else:
                 cmd.extend(["--postprocessor-args", "audio:-ar 48000"])
             
+            output_template = os.path.join(self.output_dir, "%(title)s.%(ext)s")
             cmd.extend([
-                "-o", f"{self.output_dir}\\%(title)s.%(ext)s",
+                "-o", output_template,
                 url
             ])
             
@@ -824,8 +1378,10 @@ if __name__ == "__main__":
         base_path = os.path.dirname(os.path.abspath(__file__))
     
     deps_path = os.path.join(base_path, "dependencies")
-    local_ytdlp = os.path.join(deps_path, "yt-dlp.exe")
-    local_ffmpeg = os.path.join(deps_path, "ffmpeg", "bin", "ffmpeg.exe")
+    ytdlp_binary = "yt-dlp.exe" if IS_WINDOWS else "yt-dlp"
+    ffmpeg_binary = "ffmpeg.exe" if IS_WINDOWS else "ffmpeg"
+    local_ytdlp = os.path.join(deps_path, ytdlp_binary)
+    local_ffmpeg = os.path.join(deps_path, "ffmpeg", "bin", ffmpeg_binary)
     
     # Check if yt-dlp is available (either local or system-wide)
     ytdlp_found = False
@@ -833,42 +1389,71 @@ if __name__ == "__main__":
         ytdlp_found = True
     else:
         try:
-            subprocess.run(["yt-dlp", "--version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
+            subprocess.run(
+                ["yt-dlp", "--version"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=True,
+                creationflags=subprocess_flags()
+            )
             ytdlp_found = True
         except (subprocess.SubprocessError, FileNotFoundError):
             pass
     
     if not ytdlp_found:
-        response = messagebox.askyesno(
-            "Dependencies Missing",
-            "yt-dlp is not installed.\n\nWould you like to run the setup wizard now?"
-        )
-        if response:
-            setup_bat = os.path.join(base_path, "setup.bat")
-            if os.path.exists(setup_bat):
-                subprocess.Popen([setup_bat], shell=True)
-            else:
-                messagebox.showerror("Error", "Setup file not found. Please run setup.bat manually.")
+        if IS_WINDOWS:
+            response = messagebox.askyesno(
+                "Dependencies Missing",
+                "yt-dlp is not installed.\n\nWould you like to run the setup wizard now?"
+            )
+            if response:
+                setup_bat = os.path.join(base_path, "setup.bat")
+                if os.path.exists(setup_bat):
+                    subprocess.Popen([setup_bat], shell=True)
+                else:
+                    messagebox.showerror("Error", "Setup file not found. Please run setup.bat manually.")
+        else:
+            messagebox.showerror(
+                "Dependencies Missing",
+                "yt-dlp is not installed.\n\n"
+                "Install it with your package manager:\n"
+                "  Ubuntu/Debian: sudo apt install yt-dlp\n"
+                "  Arch: sudo pacman -S yt-dlp\n"
+                "  macOS: brew install yt-dlp\n"
+                "  pip: pip install yt-dlp"
+            )
         exit(1)
     
-    # Check if ffmpeg is available (either local or at C:\ffmpeg)
+    # Check if ffmpeg is available (local, system path, or platform-specific fallback)
     ffmpeg_found = False
     if os.path.exists(local_ffmpeg):
         ffmpeg_found = True
-    elif os.path.exists("C:\\ffmpeg\\bin\\ffmpeg.exe"):
+    elif IS_WINDOWS and os.path.exists("C:\\ffmpeg\\bin\\ffmpeg.exe"):
+        ffmpeg_found = True
+    elif shutil.which("ffmpeg"):
         ffmpeg_found = True
     
     if not ffmpeg_found:
-        response = messagebox.askyesno(
-            "Dependencies Missing",
-            "FFmpeg is not installed.\n\nWould you like to run the setup wizard now?"
-        )
-        if response:
-            setup_bat = os.path.join(base_path, "setup.bat")
-            if os.path.exists(setup_bat):
-                subprocess.Popen([setup_bat], shell=True)
-            else:
-                messagebox.showerror("Error", "Setup file not found. Please run setup.bat manually.")
+        if IS_WINDOWS:
+            response = messagebox.askyesno(
+                "Dependencies Missing",
+                "FFmpeg is not installed.\n\nWould you like to run the setup wizard now?"
+            )
+            if response:
+                setup_bat = os.path.join(base_path, "setup.bat")
+                if os.path.exists(setup_bat):
+                    subprocess.Popen([setup_bat], shell=True)
+                else:
+                    messagebox.showerror("Error", "Setup file not found. Please run setup.bat manually.")
+        else:
+            messagebox.showerror(
+                "Dependencies Missing",
+                "FFmpeg is not installed.\n\n"
+                "Install it with your package manager:\n"
+                "  Ubuntu/Debian: sudo apt install ffmpeg\n"
+                "  Arch: sudo pacman -S ffmpeg\n"
+                "  macOS: brew install ffmpeg"
+            )
         exit(1)
 
     # Check if all required Python packages are installed
