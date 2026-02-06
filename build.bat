@@ -1,0 +1,1 @@
+pyinstaller --onefile --windowed --add-data "assets;assets" --icon="assets/logo.ico" yt-dlp-gui.py
