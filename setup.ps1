@@ -55,7 +55,7 @@ function Extract-ZipFile {
 }
 
 # Check and install yt-dlp
-Write-Host "[1/2] Checking yt-dlp..." -ForegroundColor Cyan
+Write-Host "[1/3] Checking yt-dlp..." -ForegroundColor Cyan
 $ytdlpPath = Join-Path $depsDir "yt-dlp.exe"
 
 if (Test-Path $ytdlpPath) {
@@ -75,7 +75,7 @@ if (Test-Path $ytdlpPath) {
 
 # Check and install ffmpeg
 Write-Host ""
-Write-Host "[2/2] Checking ffmpeg..." -ForegroundColor Cyan
+Write-Host "[2/3] Checking ffmpeg..." -ForegroundColor Cyan
 $ffmpegDir = Join-Path $depsDir "ffmpeg"
 $ffmpegBinDir = Join-Path $ffmpegDir "bin"
 $ffmpegExe = Join-Path $ffmpegBinDir "ffmpeg.exe"
@@ -132,6 +132,35 @@ if (Test-Path $ffmpegExe) {
 
 # Final verification
 Write-Host ""
+Write-Host "[3/3] Checking Node.js (required for YouTube downloads)..." -ForegroundColor Cyan
+
+$nodeFound = $false
+try {
+    $nodeVersion = & node --version 2>$null
+    if ($nodeVersion) {
+        Write-Host "Node.js $nodeVersion is already installed." -ForegroundColor Green
+        $nodeFound = $true
+    }
+} catch { }
+
+if (-not $nodeFound) {
+    Write-Host "Node.js is not installed." -ForegroundColor Yellow
+    Write-Host "YouTube now requires Node.js for yt-dlp to solve JavaScript challenges." -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "Please install Node.js from: https://nodejs.org" -ForegroundColor Cyan
+    Write-Host "Download the LTS version and run the installer." -ForegroundColor Cyan
+    Write-Host ""
+    
+    $openBrowser = Read-Host "Would you like to open the Node.js download page now? (Y/N)"
+    if ($openBrowser -eq 'Y' -or $openBrowser -eq 'y') {
+        Start-Process "https://nodejs.org"
+        Write-Host "" 
+        Write-Host "After installing Node.js, close and reopen your terminal," -ForegroundColor Yellow
+        Write-Host "then run this setup again to verify." -ForegroundColor Yellow
+    }
+}
+
+Write-Host ""
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "  Setup Complete!" -ForegroundColor Green
 Write-Host "========================================" -ForegroundColor Cyan
@@ -151,6 +180,14 @@ if (Test-Path $ffmpegExe) {
     Write-Host "[OK] ffmpeg: $ffmpegExe" -ForegroundColor Green
 } else {
     Write-Host "[ERROR] ffmpeg not found!" -ForegroundColor Red
+    $allGood = $false
+}
+
+if ($nodeFound) {
+    Write-Host "[OK] Node.js: $nodeVersion" -ForegroundColor Green
+} else {
+    Write-Host "[WARN] Node.js not installed - required for YouTube downloads" -ForegroundColor Yellow
+    Write-Host "       Install from: https://nodejs.org" -ForegroundColor Yellow
     $allGood = $false
 }
 
